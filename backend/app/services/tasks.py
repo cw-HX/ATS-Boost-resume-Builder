@@ -1,133 +1,136 @@
 """
-Celery application configuration and tasks.
-Handles background processing for ATS scoring, LaTeX compilation, and DOCX conversion.
-"""
-from celery import Celery
-from celery.result import AsyncResult
-import logging
-from typing import Dict, Any
+Background tasks for ATS scoring, LaTeX compilation, and DOCX conversion.
 
-from app.core.config import settings
+Note: Celery is optional. When not installed, tasks run synchronously.
+"""
+import logging
+from typing import Dict, Any, Optional
 
 logger = logging.getLogger(__name__)
 
-# Initialize Celery
-celery_app = Celery(
-    "ats_cv_generator",
-    broker=settings.REDIS_URL,
-    backend=settings.REDIS_URL,
-    include=["app.services.tasks"]
-)
+# Try to import Celery, provide stubs if not available
+CELERY_AVAILABLE = False
+celery_app = None
+AsyncResult = None
 
-# Celery configuration
-celery_app.conf.update(
-    task_serializer="json",
-    accept_content=["json"],
-    result_serializer="json",
-    timezone="UTC",
-    enable_utc=True,
-    task_track_started=True,
-    task_time_limit=300,  # 5 minutes max
-    task_soft_time_limit=240,  # 4 minutes soft limit
-    worker_prefetch_multiplier=1,
-    worker_concurrency=4,
-)
+try:
+    from celery import Celery
+    from celery.result import AsyncResult as CeleryAsyncResult
+    from app.core.config import settings
+    
+    # Initialize Celery only if Redis URL is configured
+    if hasattr(settings, 'REDIS_URL') and settings.REDIS_URL:
+        celery_app = Celery(
+            "ats_cv_generator",
+            broker=settings.REDIS_URL,
+            backend=settings.REDIS_URL,
+            include=["app.services.tasks"]
+        )
+        
+        # Celery configuration
+        celery_app.conf.update(
+            task_serializer="json",
+            accept_content=["json"],
+            result_serializer="json",
+            timezone="UTC",
+            enable_utc=True,
+            task_track_started=True,
+            task_time_limit=300,
+            task_soft_time_limit=240,
+            worker_prefetch_multiplier=1,
+            worker_concurrency=4,
+        )
+        CELERY_AVAILABLE = True
+        AsyncResult = CeleryAsyncResult
+        logger.info("Celery initialized with Redis backend")
+    else:
+        logger.info("Celery disabled: REDIS_URL not configured")
+except ImportError:
+    logger.info("Celery not installed - tasks run synchronously")
+except Exception as e:
+    logger.warning(f"Celery initialization failed: {e}")
 
 
-@celery_app.task(bind=True, name="tasks.compile_pdf")
-def compile_pdf_task(self, latex_code: str, output_filename: str = "cv") -> Dict[str, Any]:
+def compile_pdf_task(latex_code: str, output_filename: str) -> Dict[str, Any]:
     """
-    Background task to compile LaTeX to PDF.
+    Compile LaTeX code to PDF.
     
     Args:
         latex_code: LaTeX source code
-        output_filename: Base filename for output
+        output_filename: Output filename
         
     Returns:
-        Compilation result
+        Compilation result with PDF path or error
     """
-    import asyncio
     from app.services.document_compiler import document_compiler
     
     try:
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
+        pdf_path = document_compiler.compile_latex_to_pdf(latex_code, output_filename)
         
-        result = loop.run_until_complete(
-            document_compiler.compile_latex_to_pdf(latex_code, output_filename)
-        )
-        
+        if pdf_path:
+            return {
+                "success": True,
+                "pdf_path": pdf_path,
+                "filename": output_filename
+            }
         return {
-            "success": result.success,
-            "pdf_path": result.pdf_path,
-            "error_message": result.error_message
+            "success": False,
+            "error": "PDF compilation failed"
         }
-        
     except Exception as e:
         logger.error(f"PDF compilation task failed: {e}")
         return {
             "success": False,
-            "pdf_path": None,
-            "error_message": str(e)
+            "error": str(e)
         }
-    finally:
-        loop.close()
 
 
-@celery_app.task(bind=True, name="tasks.convert_docx")
-def convert_docx_task(self, latex_code: str, output_filename: str = "cv") -> Dict[str, Any]:
+def convert_docx_task(latex_code: str, output_filename: str) -> Dict[str, Any]:
     """
-    Background task to convert LaTeX to DOCX.
+    Convert LaTeX to DOCX.
     
     Args:
         latex_code: LaTeX source code
-        output_filename: Base filename for output
+        output_filename: Output filename
         
     Returns:
-        Conversion result
+        Conversion result with DOCX path or error
     """
-    import asyncio
     from app.services.document_compiler import document_compiler
     
     try:
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
+        docx_path = document_compiler.convert_latex_to_docx(latex_code, output_filename)
         
-        result = loop.run_until_complete(
-            document_compiler.convert_latex_to_docx(latex_code, output_filename)
-        )
-        
+        if docx_path:
+            return {
+                "success": True,
+                "docx_path": docx_path,
+                "filename": output_filename
+            }
         return {
-            "success": result.success,
-            "docx_path": result.docx_path,
-            "error_message": result.error_message
+            "success": False,
+            "error": "DOCX conversion failed"
         }
-        
     except Exception as e:
         logger.error(f"DOCX conversion task failed: {e}")
         return {
             "success": False,
-            "docx_path": None,
-            "error_message": str(e)
+            "error": str(e)
         }
-    finally:
-        loop.close()
 
 
-@celery_app.task(bind=True, name="tasks.analyze_ats")
 def analyze_ats_task(
-    self,
-    profile_data: Dict[str, Any],
+    profile_dict: Dict[str, Any],
     job_description: str,
-    jd_keywords: Dict[str, Any]
+    keywords: list
 ) -> Dict[str, Any]:
     """
-    Background task to analyze ATS compatibility.
+    Analyze ATS compatibility.
     
     Args:
-        profile_data: User profile data
+        profile_dict: Profile data as dictionary
         job_description: Job description text
-        jd_keywords: Extracted JD keywords
+        keywords: List of keywords
         
     Returns:
         ATS analysis result
@@ -140,14 +143,19 @@ def analyze_ats_task(
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         
-        profile = ProfileResponse(**profile_data)
+        profile = ProfileResponse(**profile_dict)
         
-        result = loop.run_until_complete(
-            ats_engine.analyze_ats_compatibility(profile, job_description, jd_keywords)
-        )
+        async def analyze():
+            return await ats_engine.analyze_ats_compatibility(
+                profile, job_description, keywords
+            )
         
-        return result
+        result = loop.run_until_complete(analyze())
         
+        return {
+            "success": True,
+            "analysis": result
+        }
     except Exception as e:
         logger.error(f"ATS analysis task failed: {e}")
         return {
@@ -158,14 +166,12 @@ def analyze_ats_task(
         loop.close()
 
 
-@celery_app.task(bind=True, name="tasks.generate_cv_full")
 def generate_cv_full_task(
-    self,
     user_id: str,
     job_description: str
 ) -> Dict[str, Any]:
     """
-    Background task for full CV generation pipeline.
+    Full CV generation pipeline.
     
     Args:
         user_id: User ID
@@ -264,10 +270,9 @@ def generate_cv_full_task(
         loop.close()
 
 
-@celery_app.task(name="tasks.cleanup_old_files")
 def cleanup_old_files_task(max_age_hours: int = 24) -> Dict[str, Any]:
     """
-    Periodic task to cleanup old generated files.
+    Cleanup old generated files.
     
     Args:
         max_age_hours: Maximum age of files to keep
@@ -291,19 +296,9 @@ def cleanup_old_files_task(max_age_hours: int = 24) -> Dict[str, Any]:
         }
 
 
-# Configure periodic tasks
-celery_app.conf.beat_schedule = {
-    "cleanup-old-files": {
-        "task": "tasks.cleanup_old_files",
-        "schedule": 3600.0,  # Every hour
-        "args": (24,)
-    }
-}
-
-
 def get_task_status(task_id: str) -> Dict[str, Any]:
     """
-    Get the status of a Celery task.
+    Get the status of a task.
     
     Args:
         task_id: Task ID
@@ -311,6 +306,16 @@ def get_task_status(task_id: str) -> Dict[str, Any]:
     Returns:
         Task status and result
     """
+    if not CELERY_AVAILABLE or not AsyncResult:
+        return {
+            "task_id": task_id,
+            "status": "SYNC_EXECUTION",
+            "result": None,
+            "ready": True,
+            "successful": None,
+            "message": "Tasks run synchronously - no status tracking available"
+        }
+    
     result = AsyncResult(task_id, app=celery_app)
     
     return {
@@ -319,4 +324,15 @@ def get_task_status(task_id: str) -> Dict[str, Any]:
         "result": result.result if result.ready() else None,
         "ready": result.ready(),
         "successful": result.successful() if result.ready() else None
+    }
+
+
+# Configure periodic tasks only if Celery is available
+if CELERY_AVAILABLE and celery_app:
+    celery_app.conf.beat_schedule = {
+        "cleanup-old-files": {
+            "task": "tasks.cleanup_old_files",
+            "schedule": 3600.0,  # Every hour
+            "args": (24,)
+        }
     }
