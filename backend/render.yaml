@@ -1,18 +1,12 @@
-  Installing build dependencies: still running...
-# render.yaml - Render Blueprint
+# render.yaml - Render Blueprint configured to build with Docker
 services:
   - type: web
     name: ats-cv-backend
-    runtime: python
+    runtime: docker
     rootDir: backend
-    buildCommand: |
-      apt-get update && apt-get install -y texlive-latex-base texlive-fonts-recommended
-      pip install -r requirements.txt
-      python -m spacy download en_core_web_sm
+    dockerfilePath: backend/Dockerfile
     startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
     envVars:
-      - key: PYTHON_VERSION
-        value: 3.11.0
       - key: LATEX_COMPILER
         value: pdflatex
       - key: LATEX_TEMP_DIR
