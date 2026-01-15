@@ -22,7 +22,10 @@ email-validator==2.1.0
 groq==0.4.2
 
 # NLP and ML (lighter versions for deployment)
-spacy==3.7.2
+# Pin spacy to version with pre-built wheels
+spacy==3.7.4
+# Pre-built blis wheel
+blis>=0.7.9,<1.0.0
 scikit-learn==1.4.0
 # Use CPU-only torch for smaller deployment
 --extra-index-url https://download.pytorch.org/whl/cpu
