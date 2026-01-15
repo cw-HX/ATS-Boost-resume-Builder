@@ -111,3 +111,5 @@ secrets/
 # Docker
 docker-compose.override.yml
 backend/.env.render_upload
+backend/.env*
+.env

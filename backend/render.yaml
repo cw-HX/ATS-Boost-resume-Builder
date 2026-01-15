@@ -1,12 +1,14 @@
-# render.yaml - Render Blueprint configured to build with Docker
+# render.yaml - Render Blueprint configured for native Python runtime
 services:
   - type: web
     name: ats-cv-backend
-    runtime: docker
+    runtime: python
     rootDir: backend
-    dockerfilePath: backend/Dockerfile
+    buildCommand: pip install -r requirements.txt && python -m spacy download en_core_web_sm
     startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
     envVars:
+      - key: PYTHON_VERSION
+        value: "3.11.11"
       - key: LATEX_COMPILER
         value: pdflatex
       - key: LATEX_TEMP_DIR
