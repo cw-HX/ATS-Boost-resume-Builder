@@ -4,17 +4,29 @@ Implements hybrid rule-based and AI-based ATS optimization.
 """
 import re
 import logging
-from typing import List, Dict, Any, Tuple, Optional
+from typing import List, Dict, Any, Tuple, Optional, Set
 from collections import Counter
-import spacy
-from sklearn.feature_extraction.text import TfidfVectorizer
-from sklearn.metrics.pairwise import cosine_similarity
-from sentence_transformers import SentenceTransformer
 
 from app.services.llm_service import groq_service
 from app.models.schemas import ProfileResponse
 
 logger = logging.getLogger(__name__)
+
+# Common English stop words for keyword extraction
+STOP_WORDS = {
+    'a', 'an', 'the', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for', 'of', 'with',
+    'by', 'from', 'as', 'is', 'was', 'are', 'were', 'been', 'be', 'have', 'has', 'had',
+    'do', 'does', 'did', 'will', 'would', 'could', 'should', 'may', 'might', 'must',
+    'shall', 'can', 'need', 'dare', 'ought', 'used', 'it', 'its', 'this', 'that',
+    'these', 'those', 'i', 'you', 'he', 'she', 'we', 'they', 'what', 'which', 'who',
+    'whom', 'when', 'where', 'why', 'how', 'all', 'each', 'every', 'both', 'few',
+    'more', 'most', 'other', 'some', 'such', 'no', 'nor', 'not', 'only', 'own',
+    'same', 'so', 'than', 'too', 'very', 'just', 'also', 'now', 'here', 'there',
+    'then', 'once', 'if', 'else', 'because', 'while', 'although', 'though', 'after',
+    'before', 'above', 'below', 'between', 'into', 'through', 'during', 'out',
+    'about', 'against', 'among', 'any', 'etc', 'our', 'your', 'their', 'his', 'her',
+    'up', 'down', 'over', 'under', 'again', 'further', 'am', 'being', 'able',
+}
 
 
 class ATSOptimizationEngine:
@@ -34,49 +46,34 @@ class ATSOptimizationEngine:
     BULLET_MAX_WORDS = 20
     
     def __init__(self):
-        """Initialize the ATS engine with NLP models."""
-        try:
-            self.nlp = spacy.load("en_core_web_sm")
-        except OSError:
-            logger.warning("spaCy model not found. Run: python -m spacy download en_core_web_sm")
-            self.nlp = None
-        
-        try:
-            self.sentence_model = SentenceTransformer('all-MiniLM-L6-v2')
-        except Exception as e:
-            logger.warning(f"SentenceTransformer not available: {e}")
-            self.sentence_model = None
-        
-        self.tfidf_vectorizer = TfidfVectorizer(
-            stop_words='english',
-            ngram_range=(1, 2),
-            max_features=500
-        )
+        """Initialize the ATS engine (lightweight, no ML models)."""
+        logger.info("ATS Engine initialized (rule-based mode)")
     
     def _extract_keywords_rule_based(self, text: str) -> List[str]:
-        """Extract keywords using rule-based NLP."""
-        if not self.nlp:
-            return text.lower().split()
-        
-        doc = self.nlp(text.lower())
+        """Extract keywords using simple rule-based extraction (no ML)."""
+        # Clean and tokenize
+        text_lower = text.lower()
+        # Remove special characters but keep hyphens and dots for tech terms
+        text_clean = re.sub(r'[^a-z0-9\s\.\-\+\#]', ' ', text_lower)
+        words = text_clean.split()
         
         keywords = []
         
-        # Extract nouns and proper nouns
-        for token in doc:
-            if token.pos_ in ["NOUN", "PROPN"] and not token.is_stop:
-                keywords.append(token.lemma_)
+        # Extract single words (filter stop words and short words)
+        for word in words:
+            word = word.strip('.-')
+            if word and len(word) > 2 and word not in STOP_WORDS:
+                keywords.append(word)
         
-        # Extract noun phrases
-        for chunk in doc.noun_chunks:
-            keywords.append(chunk.text.lower())
-        
-        # Extract named entities
-        for ent in doc.ents:
-            if ent.label_ in ["ORG", "PRODUCT", "GPE", "WORK_OF_ART"]:
-                keywords.append(ent.text.lower())
+        # Extract bigrams (two-word phrases)
+        for i in range(len(words) - 1):
+            w1, w2 = words[i].strip('.-'), words[i+1].strip('.-')
+            if w1 and w2 and w1 not in STOP_WORDS and w2 not in STOP_WORDS:
+                if len(w1) > 1 and len(w2) > 1:
+                    keywords.append(f"{w1} {w2}")
         
         return list(set(keywords))
+    
     # Common technology synonyms for fuzzy matching
     TECH_SYNONYMS = {
         "react": ["reactjs", "react.js", "react js"],
@@ -282,14 +279,23 @@ class ATSOptimizationEngine:
         }
     
     def _calculate_semantic_similarity(self, text1: str, text2: str) -> float:
-        """Calculate semantic similarity between two texts using sentence embeddings."""
-        if not self.sentence_model:
-            return 0.0
-        
+        """
+        Calculate semantic similarity using simple word overlap (Jaccard similarity).
+        This is a lightweight alternative to embedding-based similarity.
+        """
         try:
-            embeddings = self.sentence_model.encode([text1, text2])
-            similarity = cosine_similarity([embeddings[0]], [embeddings[1]])[0][0]
-            return float(similarity)
+            # Tokenize and clean
+            words1 = set(w.lower() for w in re.findall(r'\b\w+\b', text1) if len(w) > 2 and w.lower() not in STOP_WORDS)
+            words2 = set(w.lower() for w in re.findall(r'\b\w+\b', text2) if len(w) > 2 and w.lower() not in STOP_WORDS)
+            
+            if not words1 or not words2:
+                return 0.0
+            
+            # Jaccard similarity
+            intersection = words1.intersection(words2)
+            union = words1.union(words2)
+            
+            return len(intersection) / len(union) if union else 0.0
         except Exception as e:
             logger.error(f"Error calculating semantic similarity: {e}")
             return 0.0

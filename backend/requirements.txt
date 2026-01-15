@@ -21,9 +21,6 @@ email-validator==2.1.0
 # LLM
 groq==0.4.2
 
-# NLP - use pre-built wheels only
-spacy==3.7.2
-
 # Template Engine
 Jinja2==3.1.3
 
